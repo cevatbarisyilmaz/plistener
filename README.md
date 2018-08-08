@@ -47,3 +47,7 @@ See [godoc](https://godoc.org/github.com/cevatbarisyilmaz/plistener).
 ## Contributing
 
 PRs welcome.
+
+## License
+
+[MIT](https://github.com/cevatbarisyilmaz/plistener/blob/master/LICENSE)
