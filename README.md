@@ -41,8 +41,9 @@ See [godoc](https://godoc.org/github.com/cevatbarisyilmaz/plistener).
 ## Features
 
 - [x] Maximum Total Open Connections Limit
-- [ ] Maximum Open Connections With a Single IP Limit
+- [x] Maximum Open Connections With a Single IP Limit
 - [x] Maximum New Connections With a Single IP in a Time Interval
+- [x] IP-Ban
 
 ## Contributing
 
