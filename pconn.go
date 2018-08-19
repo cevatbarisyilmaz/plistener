@@ -29,8 +29,18 @@ func (pConn *pConn) Close() error {
 		copy(ip[:], tcpAddr.IP.To16())
 		record := pConn.listener.getRecord(ip)
 		record.mut.Lock()
-		record.activeConns--
-		record.mut.Unlock()
+		defer record.mut.Unlock()
+		if len(record.activeConns) > 0 {
+			var index int
+			for i, c := range record.activeConns {
+				if c == pConn {
+					index = i
+					break
+				}
+			}
+			record.activeConns[index] = record.activeConns[len(record.activeConns)-1]
+			record.activeConns = record.activeConns[:len(record.activeConns)-1]
+		}
 	}
 	(*pConn.listener.connCond).Signal()
 	return pConn.tcpConn.Close()
@@ -56,7 +66,7 @@ func (pConn *pConn) SetWriteDeadline(t time.Time) error {
 	return pConn.tcpConn.SetWriteDeadline(t)
 }
 
-//Casts a conn created by plistener to *net.TCPConn
+//CastToTCPConn casts a net.Conn created by plistener to a *net.TCPConn.
 func CastToTCPConn(conn net.Conn) (*net.TCPConn, error) {
 	a, ok := conn.(*pConn)
 	if !ok {
