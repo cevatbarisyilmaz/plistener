@@ -37,7 +37,7 @@ func Example() {
 	}
 }
 
-func Example_HTTP() {
+func Example_hTTP() {
 	//Resolve the TCP address
 	tcpAddr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:80")
 	if err != nil {
