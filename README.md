@@ -1,54 +1,14 @@
 # plistener
 
+[![GoDoc](https://godoc.org/github.com/cevatbarisyilmaz/plistener?status.svg)](https://godoc.org/github.com/cevatbarisyilmaz/plistener)
+[![GitHub license](https://img.shields.io/github/license/cevatbarisyilmaz/plistener.svg)](https://github.com/cevatbarisyilmaz/plistener/blob/master/LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/cevatbarisyilmaz/plistener)](https://goreportcard.com/report/github.com/cevatbarisyilmaz/plistener)
+[![GitHub release](https://img.shields.io/github/release/cevatbarisyilmaz/plistener.svg)](https://github.com/cevatbarisyilmaz/plistener/releases/)
+
 plistener is a spam-resistant TCP listener package for Go.
 
-## Download
+### Download
 
 ```
 go get github.com/cevatbarisyilmaz/plistener
 ```
-
-## Usage
-
-TCP Sockets
-```go
-//Create a PListener from a TCP Listener
-listener := plistener.New(tcpListener)
-for {
-	//Start accepting connections
-	TCPConn, err := listener.Accept()
-	if err != nil{
-		//Handle error
-	}
-	go handleConn(TCPConn) //Handle conn
-}
-```
-
-HTTP Server
-```go
-//Create a PListener from a TCP Listener
-listener := plistener.New(tcpListener)
-//Init the server
-server := &http.Server{}
-//Serve HTTP over PListener
-server.Serve(listener)
-```
-
-## Documentation
-
-See [godoc](https://godoc.org/github.com/cevatbarisyilmaz/plistener).
-
-## Features
-
-- [x] Maximum Total Open Connections Limit
-- [x] Maximum Open Connections With a Single IP Limit
-- [x] Maximum New Connections With a Single IP in a Time Interval
-- [x] IP-Ban
-
-## Contributing
-
-PRs welcome.
-
-## License
-
-[MIT](https://github.com/cevatbarisyilmaz/plistener/blob/master/LICENSE)
