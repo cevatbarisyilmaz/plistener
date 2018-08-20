@@ -169,7 +169,7 @@ func (pListener *PListener) Ban(ip net.IP) {
 	record.history = nil
 }
 
-// Ban temporarily blocks future connections with the given IP until the given time.
+// TempBan temporarily blocks future connections with the given IP until the given time.
 // It also closes all the current connections with the given IP created by this listener.
 func (pListener *PListener) TempBan(ip net.IP, until time.Time) {
 	var ipByte [16]byte
