@@ -27,8 +27,8 @@ var DefaultMaxConnSingleIP = 32
 
 // Limiter is a slice of pairs of durations and amounts of maximum permitted new connections for IP addresses during the stated duration.
 type Limiter []struct {
-	time.Duration
-	int
+	Duration time.Duration
+	Int      int
 }
 
 // DefaultLimiter is the default Limiter that will be used for the future listeners.
@@ -347,7 +347,7 @@ func (pListener *PListener) accept(timeout *time.Duration) (conn net.Conn, err e
 				count++
 				for _, limit := range pListener.limiter {
 					if limit.Duration > interval {
-						if count >= limit.int {
+						if count >= limit.Int {
 							blocked = true
 							break
 						}
