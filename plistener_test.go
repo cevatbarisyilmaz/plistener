@@ -467,10 +467,7 @@ func TestPListener_GivePrivilege(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener.SetLimiter([]struct {
-		time.Duration
-		int
-	}{
+	listener.SetLimiter(Limiter{
 		{time.Minute * 2, 1},
 	})
 	listener.GivePrivilege(laddr.IP)
@@ -539,10 +536,7 @@ func TestOnSpam(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener.SetLimiter([]struct {
-		time.Duration
-		int
-	}{
+	listener.SetLimiter(Limiter{
 		{time.Hour, 1},
 	})
 	go func() {
