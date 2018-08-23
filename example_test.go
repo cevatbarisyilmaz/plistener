@@ -73,12 +73,12 @@ func Example_advanced() {
 	pListener.MaxConn = 16
 	//Set number of maximum alive connections with a single IP to 2
 	pListener.MaxConnSingleIP = 2
-	//Let IP addresses to create only 2 new connections in minute and only 20 new connections in an hour
+	//Let IP addresses to create only 2 new connections in a minute and only 20 new connections in an hour
 	pListener.SetLimiter(plistener.Limiter{
 		{time.Minute, 2},
 		{time.Hour, 20},
 	})
-	//If an IP exceeds the rate limit or maximum amount of connections limit, ignore all the new requests for a day.
+	//If an IP exceeds the rate limit or maximum amount of connections limit, ignore all the new requests of it for a day.
 	pListener.OnSpam = func(ip net.IP) {
 		pListener.TempBan(ip, time.Now().Add(time.Hour*24))
 	}
@@ -88,26 +88,32 @@ func Example_advanced() {
 		log.Fatalln(err)
 	}
 	pListener.GivePrivilege(localIPAddr.IP)
-	for {
-		//Wait for a new connection for a minute
-		conn, err := pListener.AcceptTimeout(time.Minute)
-		if err != nil {
-			//Check if the error is actually about timeout
-			nErr, ok := err.(net.Error)
-			if !ok {
-				log.Fatalln(err)
-			}
-			if !nErr.Timeout() {
-				log.Fatalln(nErr)
-			}
-			//Log the lack of connectivity and keep accepting new connections
-			log.Println("No new connections over the last minute")
-			continue
-		}
-		//Handle the connection
+	//Create 3 goroutines to accept new connections
+	for index := 0; index < 3; index++ {
 		go func() {
-			conn.Write([]byte("Hi!"))
-			conn.Close()
+			for {
+				//Wait for a new connection for five minutes
+				conn, err := pListener.AcceptTimeout(time.Minute * 5)
+				if err != nil {
+					//Check if the error is actually about timeout
+					nErr, ok := err.(net.Error)
+					if !ok {
+						log.Fatalln(err)
+					}
+					if !nErr.Timeout() {
+						log.Fatalln(nErr)
+					}
+					//Log the lack of connectivity and keep accepting new connections
+					log.Println("No new connections for the last 5 minute")
+					continue
+				}
+				//Handle the connection
+				go func() {
+					//Greet the other side and close the connection
+					conn.Write([]byte("Hi!"))
+					conn.Close()
+				}()
+			}
 		}()
 	}
 }
