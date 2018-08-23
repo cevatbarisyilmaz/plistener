@@ -16,10 +16,9 @@ func getPListener() (*PListener, error) {
 	myPort := port
 	port++
 	portMutex.Unlock()
-	addr := net.JoinHostPort("127.0.254.1", strconv.Itoa(myPort))
-	tcpAddress, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		return nil, err
+	tcpAddress := &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 254, 1),
+		Port: myPort,
 	}
 	tcpListener, err := net.ListenTCP("tcp", tcpAddress)
 	if err != nil {
@@ -29,6 +28,7 @@ func getPListener() (*PListener, error) {
 }
 
 func TestPListener_AcceptTimeout(t *testing.T) {
+	t.Parallel()
 	ended := false
 	listener, err := getPListener()
 	if err != nil {
@@ -41,9 +41,9 @@ func TestPListener_AcceptTimeout(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	laddr, err := net.ResolveTCPAddr("tcp", "127.0.1.0:999")
-	if err != nil {
-		t.Fatal(err)
+	laddr := &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 1, 0),
+		Port: 999,
 	}
 	raddr, ok := listener.Addr().(*net.TCPAddr)
 	if !ok {
@@ -109,6 +109,107 @@ func TestPListener_AcceptTimeout(t *testing.T) {
 	}
 }
 
+func TestConcurrentAccept(t *testing.T) {
+	t.Parallel()
+	listener, err := getPListener()
+	if err != nil {
+		t.Fatal(listener)
+	}
+	defer func() {
+		err = listener.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+	listener.MaxConn = 3
+	raddr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatal("*net.TCPAddr cast failed")
+	}
+	deadline := time.Now().Add(time.Second * 20)
+	numberOfConns := 0
+	var wg sync.WaitGroup
+	for index := 0; index < 2; index++ {
+		go func() {
+			time.Sleep(time.Second * time.Duration(index*3))
+			_, err := listener.Accept()
+			if err != nil {
+				t.Error(err)
+			} else {
+				numberOfConns++
+			}
+		}()
+	}
+	for index := 0; index < 2; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Second * time.Duration(index*2))
+			dl := time.Now().Add(time.Second * 10)
+			_, err := listener.AcceptTimeout(time.Second * 10)
+			if err != nil {
+				nErr, ok := err.(net.Error)
+				if !ok {
+					t.Error(nErr)
+				} else {
+					if nErr.Timeout() {
+						if time.Now().Sub(dl).Seconds() > 1 {
+							t.Error("not quite my tempo")
+						}
+					} else {
+						t.Error(nErr)
+					}
+				}
+			} else {
+				numberOfConns++
+			}
+		}()
+	}
+	for index := 0; index < 2; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Second * time.Duration(index))
+			dl := time.Now().Add(time.Second * 8)
+			_, err := listener.AcceptDeadline(time.Now().Add(time.Second * 8))
+			if err != nil {
+				nErr, ok := err.(net.Error)
+				if !ok {
+					t.Error(nErr)
+				} else {
+					if nErr.Timeout() {
+						if time.Now().Sub(dl).Seconds() > 1 {
+							t.Error("not quite my tempo")
+						}
+					} else {
+						t.Error(nErr)
+					}
+				}
+			} else {
+				numberOfConns++
+			}
+		}()
+	}
+	for index := 0; index < 3; index++ {
+		wg.Add(1)
+		time.Sleep(time.Second)
+		go func() {
+			defer wg.Done()
+			_, err := net.DialTCP("tcp", nil, raddr)
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if numberOfConns != listener.MaxConn {
+		t.Error("number of conn", numberOfConns, "is not same as max conn", listener.MaxConn)
+	}
+	if time.Now().After(deadline) {
+		t.Error("test case did not finish before expected time, took", time.Now().Sub(deadline).Seconds(), "extra seconds")
+	}
+}
+
 func TestMaxConn(t *testing.T) {
 	t.Parallel()
 	ended := false
@@ -132,14 +233,9 @@ func TestMaxConn(t *testing.T) {
 		port := 2000
 		for i := 2; i < 642; i++ {
 			go func(i, port int) {
-				ip := "127.0.0." + strconv.Itoa((i%250)+2)
-				addr := net.JoinHostPort(ip, strconv.Itoa(port))
-				tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
-				if err != nil {
-					if !ended {
-						t.Error(err)
-					}
-					return
+				tcpAddr := &net.TCPAddr{
+					IP:   net.IPv4(127, 0, 0, byte((i%250)+2)),
+					Port: port,
 				}
 				_, err = net.DialTCP("tcp", tcpAddr, raddr)
 				if err != nil {
