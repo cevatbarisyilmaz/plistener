@@ -150,7 +150,7 @@ func (pListener *PListener) Addr() net.Addr {
 	return pListener.TCPListener.Addr()
 }
 
-// AcceptTimeout is like Accept, except it returns an error if no new non-spam request comes before the given deadline.
+// AcceptDeadline is like Accept, except it returns an error if no new non-spam request comes before the given deadline.
 // Returned timeout error implements net.Error interface.
 func (pListener *PListener) AcceptDeadline(time time.Time) (conn net.Conn, err error) {
 	return pListener.accept(time)
