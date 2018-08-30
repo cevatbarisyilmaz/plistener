@@ -1,4 +1,9 @@
-//Package plistener is a wrapper around TCP Listeners to filter spam requests.
+/*
+Package plistener is a wrapper around TCP Listeners to filter spam requests.
+
+It has capability to detect and filter out spam requests as well as imposing either temporary or permanent bans on  IPs.
+
+*/
 package plistener
 
 import (
@@ -79,11 +84,14 @@ type PListener struct {
 
 	// OnSpam is called if any unbanned IP exceeds the given Limiter or MaxConnSingleIP.
 	// It can be used to notify the application about the spams or impose a ban on the IP.
-	// No matter the behaviour of OnSpam function, the spam requests that exceeds the limiter gets filtered out, unless the IP is given a privilege.
+	//
+	// No matter the behaviour of OnSpam function, the spam requests that exceeds the limiter gets filtered out.
+	//
 	// Note that since OnSpam is called in a new goroutine, OnSpam may be called multiple times for the same IP in a short time.
 	// That means even an OnSpam call recently imposed a ban on the IP, another OnSpam may be called for the same IP shortly after the previous call.
 	// If OnSpam does not impose a ban, avoid doing costly operations as it will let spam requests to overload the application.
 	// The best practice is to pass IP to an ongoing single handler goroutine via a channel.
+	//
 	// Default value is nil
 	OnSpam func(net.IP)
 
@@ -189,7 +197,7 @@ func (pListener *PListener) Ban(ip net.IP) {
 	if record.activeConns != nil {
 		for _, c := range record.activeConns {
 			tcpConn, err := CastToTCPConn(c)
-			if err != nil {
+			if err == nil {
 				tcpConn.Close()
 			}
 		}
@@ -212,7 +220,7 @@ func (pListener *PListener) TempBan(ip net.IP, until time.Time) {
 	if record.activeConns != nil {
 		for _, c := range record.activeConns {
 			tcpConn, err := CastToTCPConn(c)
-			if err != nil {
+			if err == nil {
 				tcpConn.Close()
 			}
 		}
