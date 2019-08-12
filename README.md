@@ -11,12 +11,6 @@ plistener is a spam-resistant TCP listener package for Go.
 
 * Spam Detection/Prevention
 
-* Permanant and Temporary IP Ban
+* Permanent and Temporary IP Ban
 
 * Limit on Maximum Active Connections
-
-## Download
-
-```
-go get github.com/cevatbarisyilmaz/plistener
-```

@@ -1,216 +1,29 @@
-package plistener
+package plistener_test
 
 import (
+	"github.com/cevatbarisyilmaz/plistener"
+	"log"
 	"net"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
 )
 
-var port = 999
-var portMutex = &sync.Mutex{}
-
-func getPListener() (*PListener, error) {
-	portMutex.Lock()
-	myPort := port
-	port++
-	portMutex.Unlock()
-	tcpAddress := &net.TCPAddr{
-		IP:   net.IPv4(127, 0, 254, 1),
-		Port: myPort,
-	}
-	tcpListener, err := net.ListenTCP("tcp", tcpAddress)
+func getPListener() (*plistener.PListener, error) {
+	tcpListener, err := net.ListenTCP(
+		"tcp",
+		&net.TCPAddr{
+			IP:   net.IPv4(127, 0, 0, 1),
+			Port: 0,
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
-	return New(tcpListener), nil
+	return plistener.New(tcpListener), nil
 }
 
-func TestPListener_AcceptTimeout(t *testing.T) {
-	t.Parallel()
-	ended := false
-	listener, err := getPListener()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		ended = true
-		err = listener.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
-	laddr := &net.TCPAddr{
-		IP:   net.IPv4(127, 0, 1, 0),
-		Port: 999,
-	}
-	raddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
-	}
-	go func() {
-		conn, err := net.DialTCP("tcp", laddr, raddr)
-		if err != nil {
-			if !ended {
-				t.Error(err)
-			}
-			return
-		}
-		err = conn.Close()
-		if err != nil {
-			if !ended {
-				t.Error(err)
-			}
-			return
-		}
-	}()
-	conn, err := listener.AcceptTimeout(time.Second * 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if conn.RemoteAddr().String() != laddr.String() {
-		t.Fatal("hijacked")
-	}
-	conn, err = listener.AcceptTimeout(time.Second * 5)
-	if err == nil {
-		t.Fatal("Timeout failed")
-	}
-	nErr, ok := err.(net.Error)
-	if !ok {
-		t.Fatal("Timeout failed")
-	}
-	if !nErr.Timeout() {
-		t.Fatal("Timeout failed")
-	}
-	go func() {
-		laddr.Port++
-		conn, err := net.DialTCP("tcp", laddr, raddr)
-		if err != nil {
-			if !ended {
-				t.Error(err)
-			}
-			return
-		}
-		err = conn.Close()
-		if err != nil {
-			if !ended {
-				t.Error(err)
-			}
-			return
-		}
-	}()
-	conn, err = listener.AcceptTimeout(time.Second * 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if conn.RemoteAddr().String() != laddr.String() {
-		t.Fatal("hijacked")
-	}
-}
-
-func TestConcurrentAccept(t *testing.T) {
-	t.Parallel()
-	listener, err := getPListener()
-	if err != nil {
-		t.Fatal(listener)
-	}
-	defer func() {
-		err = listener.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
-	listener.MaxConn = 3
-	raddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
-	}
-	deadline := time.Now().Add(time.Second * 20)
-	numberOfConns := 0
-	var wg sync.WaitGroup
-	for index := 0; index < 2; index++ {
-		go func() {
-			time.Sleep(time.Second * time.Duration(index*3))
-			_, err := listener.Accept()
-			if err != nil {
-				t.Error(err)
-			} else {
-				numberOfConns++
-			}
-		}()
-	}
-	for index := 0; index < 2; index++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			time.Sleep(time.Second * time.Duration(index*2))
-			dl := time.Now().Add(time.Second * 10)
-			_, err := listener.AcceptTimeout(time.Second * 10)
-			if err != nil {
-				nErr, ok := err.(net.Error)
-				if !ok {
-					t.Error(nErr)
-				} else {
-					if nErr.Timeout() {
-						if time.Now().Sub(dl).Seconds() > 1 {
-							t.Error("not quite my tempo")
-						}
-					} else {
-						t.Error(nErr)
-					}
-				}
-			} else {
-				numberOfConns++
-			}
-		}()
-	}
-	for index := 0; index < 2; index++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			time.Sleep(time.Second * time.Duration(index))
-			dl := time.Now().Add(time.Second * 8)
-			_, err := listener.AcceptDeadline(time.Now().Add(time.Second * 8))
-			if err != nil {
-				nErr, ok := err.(net.Error)
-				if !ok {
-					t.Error(nErr)
-				} else {
-					if nErr.Timeout() {
-						if time.Now().Sub(dl).Seconds() > 1 {
-							t.Error("not quite my tempo")
-						}
-					} else {
-						t.Error(nErr)
-					}
-				}
-			} else {
-				numberOfConns++
-			}
-		}()
-	}
-	for index := 0; index < 3; index++ {
-		wg.Add(1)
-		time.Sleep(time.Second)
-		go func() {
-			defer wg.Done()
-			_, err := net.DialTCP("tcp", nil, raddr)
-			if err != nil {
-				t.Error(err)
-			}
-		}()
-	}
-	wg.Wait()
-	if numberOfConns != listener.MaxConn {
-		t.Error("number of conn", numberOfConns, "is not same as max conn", listener.MaxConn)
-	}
-	if time.Now().After(deadline) {
-		t.Error("test case did not finish before expected time, took", time.Now().Sub(deadline).Seconds(), "extra seconds")
-	}
-}
-
-func TestMaxConn(t *testing.T) {
+func TestPListener_MaxConn(t *testing.T) {
 	t.Parallel()
 	ended := false
 	listener, err := getPListener()
@@ -225,54 +38,55 @@ func TestMaxConn(t *testing.T) {
 		}
 	}()
 	listener.MaxConn = 8
-	raddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
-	}
+	raddr := listener.Addr().(*net.TCPAddr)
 	go func() {
-		port := 2000
-		for i := 2; i < 642; i++ {
-			go func(i, port int) {
-				tcpAddr := &net.TCPAddr{
-					IP:   net.IPv4(127, 0, 0, byte((i%250)+2)),
-					Port: port,
-				}
-				_, err = net.DialTCP("tcp", tcpAddr, raddr)
-				if err != nil {
-					if !ended {
-						t.Error(err)
-					}
-					return
-				}
-			}(i, port)
-			port++
-			time.Sleep(time.Millisecond * 100)
+		for i := byte(1); i < 250; i++ {
+			_, err := net.DialTCP(
+				"tcp",
+				&net.TCPAddr{
+					IP:   net.IPv4(127, 0, 0, i),
+					Port: 0,
+				},
+				raddr)
+			if err != nil && !ended {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Millisecond * 10)
 		}
 	}()
 	mut := &sync.Mutex{}
 	count := 0
-	for i := 0; i < 32; i++ {
+	reachedMax := false
+	for i := 0; i < listener.MaxConn*4; i++ {
 		conn, err := listener.Accept()
 		if err != nil {
 			t.Fatal(err)
 		}
 		mut.Lock()
 		count++
-		if count > listener.MaxConn {
+		if count == listener.MaxConn {
+			reachedMax = true
+		} else if count > listener.MaxConn {
 			t.Fatal("connections exceed MaxConn")
 		}
 		mut.Unlock()
 		go func(conn net.Conn) {
-			time.Sleep(time.Second)
+			time.Sleep(time.Millisecond * 100)
 			mut.Lock()
-			conn.Close()
+			err := conn.Close()
+			if err != nil && !ended {
+				t.Fatal(err)
+			}
 			count--
 			mut.Unlock()
 		}(conn)
 	}
+	if !reachedMax {
+		t.Fatal("connections didn't reach max")
+	}
 }
 
-func TestMaxConnSingleIP(t *testing.T) {
+func TestPListener_MaxConnSingleIP(t *testing.T) {
 	t.Parallel()
 	ended := false
 	listener, err := getPListener()
@@ -287,52 +101,51 @@ func TestMaxConnSingleIP(t *testing.T) {
 		}
 	}()
 	listener.MaxConnSingleIP = 8
-	raddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
-	}
+	raddr := listener.Addr().(*net.TCPAddr)
 	go func() {
-		for i := 2000; i < 20420; i++ {
-			go func(i int) {
-				addr := net.JoinHostPort("127.0.1.1", strconv.Itoa(i))
-				tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
-				if err != nil {
-					if !ended {
-						t.Error(err)
-					}
-					return
-				}
-				_, err = net.DialTCP("tcp", tcpAddr, raddr)
-				if err != nil {
-					if !ended {
-						t.Error(err)
-					}
-					return
-				}
-			}(i)
-			time.Sleep(time.Millisecond * 100)
+		for i := 1; i < 250; i++ {
+			_, err := net.DialTCP(
+				"tcp",
+				&net.TCPAddr{
+					IP:   net.IPv4(127, 0, 0, 1),
+					Port: 0,
+				},
+				raddr)
+			if err != nil && !ended {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Millisecond * 10)
 		}
 	}()
 	mut := &sync.Mutex{}
 	count := 0
-	for i := 0; i < 32; i++ {
+	reachedMax := false
+	for i := 0; i < listener.MaxConnSingleIP*4; i++ {
 		conn, err := listener.Accept()
 		if err != nil {
 			t.Fatal(err)
 		}
 		mut.Lock()
 		count++
-		if count > listener.MaxConnSingleIP {
+		if count == listener.MaxConnSingleIP {
+			reachedMax = true
+		} else if count > listener.MaxConnSingleIP {
 			t.Fatal("connections exceed MaxConnSingleIP")
 		}
 		mut.Unlock()
 		go func(conn net.Conn) {
-			time.Sleep(time.Second)
+			time.Sleep(time.Millisecond * 100)
 			mut.Lock()
-			conn.Close()
+			err := conn.Close()
+			if err != nil && !ended {
+				t.Fatal(err)
+			}
 			count--
 			mut.Unlock()
 		}(conn)
+	}
+	if !reachedMax {
+		t.Fatal("connections didn't reach max")
 	}
 }
 
@@ -350,79 +163,57 @@ func TestPListener_SetLimiter(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
-	}
-	listener.SetLimiter(Limiter{
-		{time.Second, 4},
+	raddr := listener.Addr().(*net.TCPAddr)
+	listener.SetLimiter(plistener.Limiter{
+		{time.Second, 3},
 		{time.Second * 20, 8},
 	})
-	for i := 0; i < 3; i++ {
-		start := time.Now()
-		go func(c int) {
-			for i := 1021 + c*6021; i < 6021+c*6021; i++ {
-				time.Sleep(time.Millisecond * 10)
-				laddr, err := net.ResolveTCPAddr("tcp", net.JoinHostPort("127.0.1.2", strconv.Itoa(i)))
-				if err != nil {
-					if !ended {
-						t.Error(err)
-					}
-					return
-				}
-				conn, err := net.DialTCP("tcp", laddr, addr)
-				if err == nil {
-					conn.Close()
-				}
+	go func() {
+		for i := 1; i < 2500; i++ {
+			_, err := net.DialTCP(
+				"tcp",
+				&net.TCPAddr{
+					IP:   net.IPv4(127, 0, 0, 1),
+					Port: 0,
+				},
+				raddr)
+			if err != nil && !ended {
+				t.Fatal(err)
 			}
-		}(i)
-		go func() {
-			count := 0
-			defer func() {
-				if count != 8 && !ended {
-					t.Error("too few connections")
-					return
+			time.Sleep(time.Millisecond * 100)
+		}
+	}()
+	for i := 0; i < 2; i++ {
+		start := time.Now()
+		count := 0
+		err = listener.SetDeadline(start.Add(time.Second * 20))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for {
+			_, err := listener.Accept()
+			if err != nil {
+				nErr, ok := err.(net.Error)
+				if !ok {
+					t.Fatal(err)
 				}
-			}()
-			for {
-				conn, err := listener.AcceptTimeout(time.Second * 20)
-				if err != nil {
-					nErr, ok := err.(net.Error)
-					if !ok {
-						if !ended {
-							t.Error("net.Error cast failed")
-						}
-						return
-					}
-					if !nErr.Timeout() {
-						if !ended {
-							t.Error(nErr)
-						}
-						return
-					}
+				if nErr.Timeout() {
 					break
 				}
-				count++
-				if time.Now().Before(start.Add(time.Second)) {
-					if count > 4 {
-						if !ended {
-							t.Error("accepted connections exceed the limiter")
-						}
-						return
-					}
-				}
-				if count > 8 {
-					if !ended {
-						t.Error("accepted connections exceed the limiter")
-					}
-					return
-				}
-				conn.Close()
+				t.Fatal(err)
 			}
-		}()
-		time.Sleep(2*time.Minute + time.Second)
+			count++
+			if time.Now().Before(start.Add(time.Second)) && count > 3 {
+				t.Fatal("connections exceed the limiter")
+			} else if count > 8 {
+				t.Fatal("connections exceed the limiter")
+			}
+		}
+		if count < 8 {
+			t.Fatal("connections didn't reach max")
+		}
+		time.Sleep(time.Second * 20)
 	}
-	time.Sleep(time.Second * 41)
 }
 
 func TestPListener_Ban(t *testing.T) {
@@ -439,30 +230,30 @@ func TestPListener_Ban(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	laddr, err := net.ResolveTCPAddr("tcp", "127.0.1.3:999")
-	if err != nil {
-		t.Fatal(err)
+	laddr := &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: 0,
 	}
 	listener.Ban(laddr.IP)
-	raddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
-	}
+	raddr := listener.Addr().(*net.TCPAddr)
 	banned := true
 	for {
 		go func() {
-			laddr.Port++
 			_, err := net.DialTCP("tcp", laddr, raddr)
 			if err != nil {
 				if !ended {
-					t.Error(err)
+					t.Fatal(err)
 				}
 				return
 			}
 		}()
-		conn, err := listener.AcceptTimeout(time.Second * 7)
+		err = listener.SetDeadline(time.Now().Add(time.Second * 7))
+		if err != nil {
+			log.Fatal(err)
+		}
+		conn, err := listener.Accept()
 		if err == nil {
-			if conn.RemoteAddr().String() == laddr.String() {
+			if conn.RemoteAddr().(*net.TCPAddr).IP.Equal(laddr.IP) {
 				if banned {
 					t.Fatal("banned IP was accepted")
 				}
@@ -499,41 +290,42 @@ func TestPListener_TempBan(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	laddr, err := net.ResolveTCPAddr("tcp", "127.0.1.4:999")
-	if err != nil {
-		t.Fatal(err)
+	laddr := &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: 0,
 	}
-	deadline := time.Now().Add(time.Minute)
+	deadline := time.Now().Add(time.Second * 3)
 	listener.TempBan(laddr.IP, deadline)
-	raddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
-	}
+	raddr := listener.Addr().(*net.TCPAddr)
 	go func() {
 		for index := 0; index < 10; index++ {
 			conn, err := net.DialTCP("tcp", laddr, raddr)
 			if err != nil {
 				if !ended {
-					t.Error(err)
+					t.Fatal(err)
 				}
 				return
 			}
-			time.Sleep(time.Second * 10)
+			time.Sleep(time.Second)
 			err = conn.Close()
 			if err != nil {
 				if !ended {
-					t.Error(err)
+					t.Fatal(err)
 				}
 				return
 			}
 		}
 	}()
-	conn, err := listener.AcceptTimeout(time.Minute * 2)
+	err = listener.SetDeadline(time.Now().Add(time.Minute))
+	if err != nil {
+		log.Fatal(err)
+	}
+	conn, err := listener.Accept()
 	now := time.Now()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conn.RemoteAddr().String() != laddr.String() {
+	if !conn.RemoteAddr().(*net.TCPAddr).IP.Equal(laddr.IP) {
 		t.Fatal("hijacked")
 	}
 	if now.Before(deadline) {
@@ -555,21 +347,17 @@ func TestPListener_GivePrivilege(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	raddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
+	raddr := listener.Addr().(*net.TCPAddr)
+	laddr := &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: 0,
 	}
-	laddr, err := net.ResolveTCPAddr("tcp", "127.0.1.5:999")
-	if err != nil {
-		t.Fatal(err)
-	}
-	listener.SetLimiter(Limiter{
-		{time.Minute * 2, 1},
+	listener.SetLimiter(plistener.Limiter{
+		{time.Second * 5, 1},
 	})
 	listener.GivePrivilege(laddr.IP)
 	go func() {
 		for index := 0; index < 10; index++ {
-			laddr.Port++
 			conn, err := net.DialTCP("tcp", laddr, raddr)
 			if err != nil {
 				if !ended {
@@ -578,12 +366,19 @@ func TestPListener_GivePrivilege(t *testing.T) {
 				return
 			}
 			time.Sleep(time.Second)
-			conn.Close()
+			err = conn.Close()
+			if err != nil && !ended {
+				t.Fatal(err)
+			}
 		}
 	}()
 	count := 0
 	for {
-		conn, err := listener.AcceptTimeout(time.Second * 10)
+		err = listener.SetDeadline(time.Now().Add(time.Second * 7))
+		if err != nil {
+			log.Fatal(err)
+		}
+		conn, err := listener.Accept()
 		if err != nil {
 			nErr, ok := err.(net.Error)
 			if !ok {
@@ -597,7 +392,7 @@ func TestPListener_GivePrivilege(t *testing.T) {
 			}
 			return
 		}
-		if conn.RemoteAddr().String() != laddr.String() {
+		if !conn.RemoteAddr().(*net.TCPAddr).IP.Equal(laddr.IP) {
 			t.Fatal("hijacked")
 		}
 		count++
@@ -610,7 +405,7 @@ func TestPListener_GivePrivilege(t *testing.T) {
 	}
 }
 
-func TestOnSpam(t *testing.T) {
+func TestPListener_OnSpam(t *testing.T) {
 	t.Parallel()
 	ended := false
 	listener, err := getPListener()
@@ -624,24 +419,20 @@ func TestOnSpam(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	raddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
+	raddr := listener.Addr().(*net.TCPAddr)
+	laddr := &net.TCPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: 0,
 	}
-	laddr, err := net.ResolveTCPAddr("tcp", "127.0.1.6:999")
-	if err != nil {
-		t.Fatal(err)
-	}
-	listener.SetLimiter(Limiter{
+	listener.SetLimiter(plistener.Limiter{
 		{time.Hour, 1},
 	})
 	go func() {
 		for index := 0; index < 100; index++ {
-			laddr.Port++
 			conn, err := net.DialTCP("tcp", laddr, raddr)
 			if err != nil {
 				if !ended {
-					t.Error(err)
+					t.Fatal(err)
 				}
 				return
 			}
@@ -649,7 +440,7 @@ func TestOnSpam(t *testing.T) {
 			err = conn.Close()
 			if err != nil {
 				if !ended {
-					t.Error(err)
+					t.Fatal(err)
 				}
 				return
 			}
@@ -665,7 +456,11 @@ func TestOnSpam(t *testing.T) {
 		banned = true
 	}
 	for {
-		conn, err := listener.AcceptTimeout(time.Second * 5)
+		err = listener.SetDeadline(time.Now().Add(time.Second * 5))
+		if err != nil {
+			log.Fatal(err)
+		}
+		conn, err := listener.Accept()
 		if err != nil {
 			nErr, ok := err.(net.Error)
 			if !ok {
@@ -679,7 +474,7 @@ func TestOnSpam(t *testing.T) {
 			}
 			t.Fatal(err)
 		}
-		if conn.RemoteAddr().String() != laddr.String() {
+		if !conn.RemoteAddr().(*net.TCPAddr).IP.Equal(laddr.IP) {
 			t.Fatal("hijacked")
 		}
 		if first || banned {

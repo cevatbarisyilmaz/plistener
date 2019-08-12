@@ -1,7 +1,7 @@
-package plistener
+package plistener_test
 
 import (
-	"errors"
+	"github.com/cevatbarisyilmaz/plistener"
 	"golang.org/x/net/nettest"
 	"net"
 	"testing"
@@ -9,7 +9,7 @@ import (
 
 func TestPConn(t *testing.T) {
 	nettest.TestConn(t, func() (c1, c2 net.Conn, stop func(), err error) {
-		var listener *PListener
+		var listener *plistener.PListener
 		listener, err = getPListener()
 		if err != nil {
 			return
@@ -20,17 +20,16 @@ func TestPConn(t *testing.T) {
 			conn, err := listener.Accept()
 			if err != nil {
 				errChannel <- err
+				return
 			}
 			connChannel <- conn
 		}(connChannel, errChannel)
 		go func(connChannel chan net.Conn, errChannel chan error) {
-			raddr, ok := listener.Addr().(*net.TCPAddr)
-			if !ok {
-				errChannel <- errors.New("*net.TCPAddr cast failed")
-			}
+			raddr := listener.Addr().(*net.TCPAddr)
 			conn, err := net.DialTCP("tcp", nil, raddr)
 			if err != nil {
 				errChannel <- err
+				return
 			}
 			connChannel <- conn
 		}(connChannel, errChannel)
@@ -42,9 +41,18 @@ func TestPConn(t *testing.T) {
 				} else {
 					c2 = newConn
 					stop = func() {
-						c1.Close()
-						c2.Close()
-						listener.Close()
+						err := c1.Close()
+						if err != nil {
+							t.Error(err)
+						}
+						err = c2.Close()
+						if err != nil {
+							t.Error(err)
+						}
+						err = listener.Close()
+						if err != nil {
+							t.Error(err)
+						}
 					}
 					return
 				}
@@ -53,35 +61,4 @@ func TestPConn(t *testing.T) {
 			}
 		}
 	})
-}
-
-func TestCastToTCPConn(t *testing.T) {
-	listener, err := getPListener()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		err = listener.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("*net.TCPAddr cast failed")
-	}
-	go func() {
-		net.DialTCP("tcp", nil, addr)
-	}()
-	conn, err := listener.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	tcpConn, err := CastToTCPConn(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tcpConn == nil {
-		t.Fatal("casted *net.TCP is nil")
-	}
 }

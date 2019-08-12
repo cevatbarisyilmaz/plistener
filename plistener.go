@@ -1,7 +1,7 @@
 /*
 Package plistener is a wrapper around TCP Listeners to filter spam requests.
 
-It has capability to detect and filter out spam requests as well as imposing either temporary or permanent bans on  IPs.
+It has capability to detect and filter out spam requests as well as temporary and permanent bans on  IPs.
 
 */
 package plistener
@@ -12,14 +12,6 @@ import (
 	"time"
 )
 
-type timeoutError struct{}
-
-func (e timeoutError) Error() string   { return "timeout error" }
-func (e timeoutError) Timeout() bool   { return true }
-func (e timeoutError) Temporary() bool { return false }
-
-var errTimeout = net.Error(timeoutError{})
-
 // DefaultMaxConn is maximum number of connections listeners willing to keep active.
 // Changing DefaultMaxConn only affects future listeners.
 // To change a currently active listener use MaxConn field of PListener struct.
@@ -28,7 +20,7 @@ var DefaultMaxConn = 1048
 // DefaultMaxConnSingleIP is maximum number of connections listeners willing to keep active with a single IP.
 // Changing DefaultMaxConnSingleIP only affects future listeners.
 // To change a currently active listener use MaxConnSingleIP field of PListener struct.
-var DefaultMaxConnSingleIP = 32
+var DefaultMaxConnSingleIP = 16
 
 // Limiter is a slice of pairs of durations and amounts of maximum permitted new connections for IP addresses during the stated duration.
 type Limiter []struct {
@@ -46,7 +38,7 @@ var DefaultLimiter = Limiter{
 }
 
 type ipRecord struct {
-	activeConns    []net.Conn
+	activeConns    []*pConn
 	history        []time.Time
 	recentlyActive bool
 	blocked        bool
@@ -57,7 +49,7 @@ type ipRecord struct {
 
 func newIPRecord() *ipRecord {
 	return &ipRecord{
-		activeConns:    []net.Conn{},
+		activeConns:    []*pConn{},
 		history:        []time.Time{},
 		recentlyActive: false,
 		blocked:        false,
@@ -69,10 +61,7 @@ func newIPRecord() *ipRecord {
 
 // PListener implements the net.Listener interface with protection against spams.
 type PListener struct {
-	// TCPListener is the underlying listener for the PListener.
-	// It can be used to call SyscallConn and File functions.
-	// Rest of the function should called via PListener for a stable behavior.
-	TCPListener *net.TCPListener
+	*net.TCPListener
 
 	// MaxConn is maximum number of connections listener willing to keep active.
 	// Default value is DefaultMaxConn.
@@ -85,14 +74,9 @@ type PListener struct {
 	// OnSpam is called if any unbanned IP exceeds the given Limiter or MaxConnSingleIP.
 	// It can be used to notify the application about the spams or impose a ban on the IP.
 	//
-	// No matter the behaviour of OnSpam function, the spam requests that exceeds the limiter gets filtered out.
+	// No matter the behaviour of OnSpam function, the spam requests that exceeds the limiter or maximum connection quota gets filtered out.
 	//
-	// Note that since OnSpam is called in a new goroutine, OnSpam may be called multiple times for the same IP in a short time.
-	// That means even an OnSpam call recently imposed a ban on the IP, another OnSpam may be called for the same IP shortly after the previous call.
-	// If OnSpam does not impose a ban, avoid doing costly operations as it will let spam requests to overload the application.
-	// The best practice is to pass IP to an ongoing single handler goroutine via a channel.
-	//
-	// Default value is nil
+	// Default value is nil.
 	OnSpam func(net.IP)
 
 	currentConn int
@@ -103,9 +87,6 @@ type PListener struct {
 
 	ipRecords   map[[16]byte]*ipRecord
 	ipRecordMut *sync.Mutex
-
-	deadlines   []time.Time
-	deadlineMut *sync.Mutex
 }
 
 // New returns a new PListener that wraps the given TCPListener with anti-spam capabilities.
@@ -121,156 +102,13 @@ func New(tcpListener *net.TCPListener) (pListener *PListener) {
 		maxLimitDur:     DefaultLimiter[len(DefaultLimiter)-1].Duration,
 		ipRecords:       map[[16]byte]*ipRecord{},
 		ipRecordMut:     &sync.Mutex{},
-		deadlines:       []time.Time{},
-		deadlineMut:     &sync.Mutex{},
 	}
 	go pListener.cleanup()
 	return
 }
 
-// Accept implements the Accept method in the net.Listener interface; it waits for the next non-spam call and returns a generic Conn.
+// Accept implements the Accept method in the net.Listener interface; it waits for the next non-spam call and returns a net.Conn.
 func (pListener *PListener) Accept() (conn net.Conn, err error) {
-	return pListener.accept(time.Time{})
-}
-
-// Close closes the underlying TCP listener and erases the pointers from created connections.
-// To remove internal records from the memory, remove all the pointers pointing to PListener
-func (pListener *PListener) Close() error {
-	pListener.ipRecordMut.Lock()
-	defer pListener.ipRecordMut.Unlock()
-	for _, record := range pListener.ipRecords {
-		record.mut.Lock()
-		if record.activeConns != nil {
-			for _, conn := range record.activeConns {
-				pconn, ok := conn.(*pConn)
-				if ok {
-					pconn.listener = nil
-				}
-			}
-		}
-		record.mut.Unlock()
-	}
-	return pListener.TCPListener.Close()
-}
-
-// Addr returns the listener's network address, a *TCPAddr. The Addr returned is shared by all invocations of Addr, so do not modify it.
-func (pListener *PListener) Addr() net.Addr {
-	return pListener.TCPListener.Addr()
-}
-
-// AcceptDeadline is like Accept, except it returns an error if no new non-spam request comes before the given deadline.
-// Returned timeout error implements net.Error interface.
-func (pListener *PListener) AcceptDeadline(time time.Time) (conn net.Conn, err error) {
-	return pListener.accept(time)
-}
-
-// AcceptTimeout is like Accept, except it returns an error if no new non-spam request comes during the given duration.
-// Returned timeout error implements net.Error interface.
-func (pListener *PListener) AcceptTimeout(duration time.Duration) (conn net.Conn, err error) {
-	return pListener.accept(time.Now().Add(duration))
-}
-
-// SetLimiter overrides the default limiter for listener.
-// Limits can be sorted in any order.
-// A duration and int duple specifies maximum allowed new connections from an IP in a time interval.
-func (pListener *PListener) SetLimiter(limiter Limiter) {
-	pListener.limiter = limiter
-	max := time.Nanosecond
-	for _, limit := range limiter {
-		if limit.Duration > max {
-			max = limit.Duration
-		}
-	}
-	pListener.maxLimitDur = max
-}
-
-// Ban permanently blocks any future connections and closes all the current connections with the given IP created by this listener.
-func (pListener *PListener) Ban(ip net.IP) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip)
-	record := pListener.getRecord(ipByte)
-	record.mut.Lock()
-	defer record.mut.Unlock()
-	record.blocked = true
-	record.blockedUntil = nil
-	record.privileged = false
-	if record.activeConns != nil {
-		for _, c := range record.activeConns {
-			tcpConn, err := CastToTCPConn(c)
-			if err == nil {
-				tcpConn.Close()
-			}
-		}
-	}
-	record.activeConns = nil
-	record.history = nil
-}
-
-// TempBan temporarily blocks future connections with the given IP until the given time.
-// It also closes all the current connections with the given IP created by this listener.
-func (pListener *PListener) TempBan(ip net.IP, until time.Time) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip)
-	record := pListener.getRecord(ipByte)
-	record.mut.Lock()
-	defer record.mut.Unlock()
-	record.blocked = false
-	record.blockedUntil = &until
-	record.privileged = false
-	if record.activeConns != nil {
-		for _, c := range record.activeConns {
-			tcpConn, err := CastToTCPConn(c)
-			if err == nil {
-				tcpConn.Close()
-			}
-		}
-	}
-	record.activeConns = []net.Conn{}
-	record.history = []time.Time{}
-}
-
-// RevokeBan revokes the ban on the given IP.
-func (pListener *PListener) RevokeBan(ip net.IP) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip)
-	record := pListener.getRecord(ipByte)
-	record.mut.Lock()
-	defer record.mut.Unlock()
-	record.blocked = false
-	record.blockedUntil = nil
-	record.activeConns = []net.Conn{}
-	record.history = []time.Time{}
-}
-
-// GivePrivilege removes the limitations of the limiter and MaxConnSingleIP for the given IP.
-// However if MaxConn quota is reached, requests from privileged IPs are still get blocked.
-func (pListener *PListener) GivePrivilege(ip net.IP) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip)
-	record := pListener.getRecord(ipByte)
-	record.mut.Lock()
-	defer record.mut.Unlock()
-	record.blocked = false
-	record.blockedUntil = nil
-	if record.activeConns == nil {
-		record.activeConns = []net.Conn{}
-	}
-	record.history = nil
-	record.privileged = true
-}
-
-// RevokePrivilege removes the privilege of the given IP.
-func (pListener *PListener) RevokePrivilege(ip net.IP) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip)
-	record := pListener.getRecord(ipByte)
-	record.mut.Lock()
-	defer record.mut.Unlock()
-	record.privileged = false
-	record.history = []time.Time{}
-}
-
-func (pListener *PListener) accept(deadline time.Time) (conn net.Conn, err error) {
 	blocked := false
 	banned := false
 	var tcpConn *net.TCPConn
@@ -279,7 +117,7 @@ func (pListener *PListener) accept(deadline time.Time) (conn net.Conn, err error
 	defer func() {
 		if err != nil {
 			if tcpConn != nil {
-				tcpConn.Close()
+				_ = tcpConn.Close()
 			}
 			pListener.connCond.L.Lock()
 			pListener.currentConn--
@@ -290,11 +128,14 @@ func (pListener *PListener) accept(deadline time.Time) (conn net.Conn, err error
 	}()
 	for {
 		if blocked {
-			tcpConn.Close()
-			if !banned && pListener.OnSpam != nil {
-				go pListener.OnSpam(raddr.IP)
+			err = tcpConn.Close()
+			if err != nil {
+				return
 			}
 			record.mut.Unlock()
+			if !banned && pListener.OnSpam != nil {
+				pListener.OnSpam(raddr.IP)
+			}
 			banned = false
 			blocked = false
 			pListener.connCond.L.Lock()
@@ -302,82 +143,19 @@ func (pListener *PListener) accept(deadline time.Time) (conn net.Conn, err error
 		} else {
 			pListener.connCond.L.Lock()
 		}
-		if deadline.Equal(time.Time{}) {
-			for pListener.currentConn >= pListener.MaxConn {
-				pListener.connCond.Wait()
-			}
-			pListener.currentConn++
-			pListener.connCond.L.Unlock()
-			for {
-				tcpConn, err = pListener.TCPListener.AcceptTCP()
-				if err != nil {
-					nErr, ok := err.(net.Error)
-					if ok {
-						if nErr.Timeout() {
-							continue
-						}
-					}
-				}
-				break
-			}
-
-		} else {
-			cond := sync.NewCond(&sync.Mutex{})
-			awaken := false
-			go func() {
-				for pListener.currentConn >= pListener.MaxConn {
-					pListener.connCond.Wait()
-				}
-				pListener.currentConn++
-				pListener.connCond.L.Unlock()
-				cond.L.Lock()
-				defer cond.L.Unlock()
-				if awaken {
-					return
-				}
-				awaken = true
-				pListener.addDeadline(deadline)
-				defer pListener.removeDeadline(deadline)
-				for {
-					tcpConn, err = pListener.TCPListener.AcceptTCP()
-					if err != nil {
-						nErr, ok := err.(net.Error)
-						if ok {
-							if nErr.Timeout() && time.Now().Before(deadline) {
-								continue
-							}
-						}
-					}
-					break
-				}
-				cond.Signal()
-			}()
-			go func() {
-				time.Sleep(deadline.Sub(time.Now()))
-				cond.L.Lock()
-				defer cond.L.Unlock()
-				if awaken {
-					return
-				}
-				awaken = true
-				err = errTimeout
-				cond.Signal()
-			}()
-			cond.L.Lock()
-			cond.Wait()
-			cond.L.Unlock()
+		for pListener.currentConn >= pListener.MaxConn {
+			pListener.connCond.Wait()
+		}
+		pListener.currentConn++
+		pListener.connCond.L.Unlock()
+		tcpConn, err = pListener.TCPListener.AcceptTCP()
+		if err != nil {
+			return
 		}
 		now := time.Now()
-		if err != nil {
-			return
-		}
-		raddr, err = net.ResolveTCPAddr("tcp", tcpConn.RemoteAddr().String())
-		if err != nil {
-			return
-		}
+		raddr = tcpConn.RemoteAddr().(*net.TCPAddr)
 		var ip [16]byte
 		copy(ip[:], raddr.IP.To16())
-
 		record = pListener.getRecord(ip)
 		record.mut.Lock()
 		if !record.privileged {
@@ -426,17 +204,130 @@ func (pListener *PListener) accept(deadline time.Time) (conn net.Conn, err error
 			}
 			record.history = append(record.history, now)
 		}
-		conn = &pConn{tcpConn: tcpConn, listener: pListener}
-		record.activeConns = append(record.activeConns, conn)
+		pconn := &pConn{TCPConn: tcpConn, listener: pListener}
+		record.activeConns = append(record.activeConns, pconn)
+		conn = pconn
 		return
 	}
+}
+
+// Close closes the underlying TCP listener and erases the pointers from created connections.
+// To remove internal records from the memory, remove all the pointers pointing to PListener.
+func (pListener *PListener) Close() error {
+	pListener.ipRecordMut.Lock()
+	defer pListener.ipRecordMut.Unlock()
+	for _, record := range pListener.ipRecords {
+		record.mut.Lock()
+		if record.activeConns != nil {
+			for _, conn := range record.activeConns {
+				conn.listener = nil
+			}
+		}
+		record.mut.Unlock()
+	}
+	return pListener.TCPListener.Close()
+}
+
+// SetLimiter overrides the default limiter for listener.
+// Limits can be sorted in any order.
+// A duration and int duple specifies maximum allowed new connections from an IP in a time interval.
+func (pListener *PListener) SetLimiter(limiter Limiter) {
+	pListener.limiter = limiter
+	max := time.Nanosecond
+	for _, limit := range limiter {
+		if limit.Duration > max {
+			max = limit.Duration
+		}
+	}
+	pListener.maxLimitDur = max
+}
+
+// Ban permanently blocks any future connections and closes all the current connections with the given IP created by this listener.
+func (pListener *PListener) Ban(ip net.IP) {
+	var ipByte [16]byte
+	copy(ipByte[:], ip.To16())
+	record := pListener.getRecord(ipByte)
+	record.mut.Lock()
+	defer record.mut.Unlock()
+	record.blocked = true
+	record.blockedUntil = nil
+	record.privileged = false
+	if record.activeConns != nil {
+		for _, c := range record.activeConns {
+			_ = c.TCPConn.Close()
+		}
+	}
+	record.activeConns = nil
+	record.history = nil
+}
+
+// TempBan temporarily blocks future connections with the given IP until the given time.
+// It also closes all the current connections with the given IP created by this listener.
+func (pListener *PListener) TempBan(ip net.IP, until time.Time) {
+	var ipByte [16]byte
+	copy(ipByte[:], ip.To16())
+	record := pListener.getRecord(ipByte)
+	record.mut.Lock()
+	defer record.mut.Unlock()
+	record.blocked = false
+	record.blockedUntil = &until
+	record.privileged = false
+	if record.activeConns != nil {
+		for _, c := range record.activeConns {
+			_ = c.TCPConn.Close()
+		}
+	}
+	record.activeConns = []*pConn{}
+	record.history = []time.Time{}
+}
+
+// RevokeBan revokes the ban on the given IP.
+func (pListener *PListener) RevokeBan(ip net.IP) {
+	var ipByte [16]byte
+	copy(ipByte[:], ip.To16())
+	record := pListener.getRecord(ipByte)
+	record.mut.Lock()
+	defer record.mut.Unlock()
+	record.blocked = false
+	record.blockedUntil = nil
+	record.activeConns = []*pConn{}
+	record.history = []time.Time{}
+}
+
+// GivePrivilege removes the limitations of the limiter and MaxConnSingleIP for the given IP.
+// However if MaxConn quota is reached, requests from privileged IPs are still get blocked.
+func (pListener *PListener) GivePrivilege(ip net.IP) {
+	var ipByte [16]byte
+	copy(ipByte[:], ip.To16())
+	record := pListener.getRecord(ipByte)
+	record.mut.Lock()
+	defer record.mut.Unlock()
+	record.blocked = false
+	record.blockedUntil = nil
+	if record.activeConns == nil {
+		record.activeConns = []*pConn{}
+	}
+	record.history = nil
+	record.privileged = true
+}
+
+// RevokePrivilege removes the privilege of the given IP.
+func (pListener *PListener) RevokePrivilege(ip net.IP) {
+	var ipByte [16]byte
+	copy(ipByte[:], ip.To16())
+	record := pListener.getRecord(ipByte)
+	record.mut.Lock()
+	defer record.mut.Unlock()
+	record.privileged = false
+	record.history = []time.Time{}
 }
 
 func (pListener *PListener) getRecord(ip [16]byte) (record *ipRecord) {
 	pListener.ipRecordMut.Lock()
 	defer pListener.ipRecordMut.Unlock()
 	if pListener.ipRecords == nil {
-		return newIPRecord()
+		record = newIPRecord()
+		return
 	}
 	record = pListener.ipRecords[ip]
 	if record != nil {
@@ -459,11 +350,20 @@ func (pListener *PListener) cleanup() {
 			pListener.ipRecordMut.Unlock()
 			break
 		}
+		now := time.Now()
 		for ip, record := range pListener.ipRecords {
 			record.mut.Lock()
-			if record.blocked || record.blockedUntil != nil || record.privileged {
+			if record.blocked || record.privileged {
 				record.mut.Unlock()
 				continue
+			}
+			if record.blockedUntil != nil {
+				if now.After(*record.blockedUntil) {
+					record.blockedUntil = nil
+				} else {
+					record.mut.Unlock()
+					continue
+				}
 			}
 			if !record.recentlyActive {
 				if len(record.activeConns) == 0 {
@@ -477,52 +377,5 @@ func (pListener *PListener) cleanup() {
 			record.mut.Unlock()
 		}
 		pListener.ipRecordMut.Unlock()
-	}
-}
-
-func (pListener *PListener) addDeadline(deadline time.Time) {
-	pListener.deadlineMut.Lock()
-	defer pListener.deadlineMut.Unlock()
-	if len(pListener.deadlines) == 0 {
-		pListener.deadlines = append(pListener.deadlines, deadline)
-	} else {
-		index := len(pListener.deadlines)
-		for i, d := range pListener.deadlines {
-			if deadline.Before(d) {
-				index = i
-				break
-			}
-		}
-		if index == 0 {
-			temp := []time.Time{deadline}
-			pListener.deadlines = append(temp, pListener.deadlines...)
-		} else if index == len(pListener.deadlines) {
-			pListener.deadlines = append(pListener.deadlines, deadline)
-		} else {
-			pListener.deadlines = append(pListener.deadlines, time.Time{})
-			copy(pListener.deadlines[index+1:], pListener.deadlines[index:])
-			pListener.deadlines[index] = deadline
-		}
-	}
-	pListener.TCPListener.SetDeadline(pListener.deadlines[0])
-}
-
-func (pListener *PListener) removeDeadline(deadline time.Time) {
-	pListener.deadlineMut.Lock()
-	defer pListener.deadlineMut.Unlock()
-	var index int
-	for i, d := range pListener.deadlines {
-		if d.Equal(deadline) {
-			index = i
-			break
-		}
-	}
-	copy(pListener.deadlines[index:], pListener.deadlines[index+1:])
-	pListener.deadlines[len(pListener.deadlines)-1] = time.Time{}
-	pListener.deadlines = pListener.deadlines[:len(pListener.deadlines)-1]
-	if len(pListener.deadlines) == 0 {
-		pListener.TCPListener.SetDeadline(time.Time{})
-	} else {
-		pListener.TCPListener.SetDeadline(pListener.deadlines[0])
 	}
 }
