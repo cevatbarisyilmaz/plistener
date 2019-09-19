@@ -90,24 +90,10 @@ func Example_advanced() {
 	//Give privilege to the localhost to bypass all the limits
 	pListener.GivePrivilege(net.IPv4(127, 0, 0, 1))
 	for {
-		//Wait for a new connection for five minutes
-		err = pListener.SetDeadline(time.Now().Add(5 * time.Minute))
-		if err != nil {
-			log.Fatal(err)
-		}
+		//Wait for a new connection
 		conn, err := pListener.Accept()
 		if err != nil {
-			//Check if the error is actually about timeout
-			nErr, ok := err.(net.Error)
-			if !ok {
-				log.Fatal(err)
-			}
-			if !nErr.Timeout() {
-				log.Fatal(nErr)
-			}
-			//Log the lack of connectivity and keep accepting new connections
-			log.Println("No new connections for the last 5 minute")
-			continue
+			log.Fatal(err)
 		}
 		//Handle the connection
 		go func() {

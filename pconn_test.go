@@ -41,14 +41,8 @@ func TestPConn(t *testing.T) {
 				} else {
 					c2 = newConn
 					stop = func() {
-						err := c1.Close()
-						if err != nil {
-							t.Error(err)
-						}
-						err = c2.Close()
-						if err != nil {
-							t.Error(err)
-						}
+						_ = c1.Close()
+						_ = c2.Close()
 						err = listener.Close()
 						if err != nil {
 							t.Error(err)

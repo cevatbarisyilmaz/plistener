@@ -5,7 +5,7 @@ import (
 )
 
 type pConn struct {
-	*net.TCPConn
+	net.Conn
 	listener *PListener
 }
 
@@ -15,7 +15,7 @@ func (pConn *pConn) Close() error {
 		myListener.connCond.L.Lock()
 		myListener.currentConn--
 		myListener.connCond.L.Unlock()
-		tcpAddr := pConn.TCPConn.RemoteAddr().(*net.TCPAddr)
+		tcpAddr := pConn.Conn.RemoteAddr().(*net.TCPAddr)
 		var ip [16]byte
 		copy(ip[:], tcpAddr.IP.To16())
 		record := myListener.getRecord(ip)
@@ -34,5 +34,5 @@ func (pConn *pConn) Close() error {
 		}
 		myListener.connCond.Signal()
 	}
-	return pConn.TCPConn.Close()
+	return pConn.Conn.Close()
 }

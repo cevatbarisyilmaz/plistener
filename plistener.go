@@ -15,12 +15,12 @@ import (
 // DefaultMaxConn is maximum number of connections listeners willing to keep active.
 // Changing DefaultMaxConn only affects future listeners.
 // To change a currently active listener use MaxConn field of PListener struct.
-var DefaultMaxConn = 1048
+var DefaultMaxConn = 2048
 
 // DefaultMaxConnSingleIP is maximum number of connections listeners willing to keep active with a single IP.
 // Changing DefaultMaxConnSingleIP only affects future listeners.
 // To change a currently active listener use MaxConnSingleIP field of PListener struct.
-var DefaultMaxConnSingleIP = 16
+var DefaultMaxConnSingleIP = 24
 
 // Limiter is a slice of pairs of durations and amounts of maximum permitted new connections for IP addresses during the stated duration.
 type Limiter []struct {
@@ -32,9 +32,9 @@ type Limiter []struct {
 // Changing DefaultLimiter only affects future listeners.
 // To change a currently active listener use SetLimiter function of PListener struct.
 var DefaultLimiter = Limiter{
-	{time.Second, 32},
-	{time.Minute, 256},
-	{time.Hour, 2048},
+	{time.Second, 64},
+	{time.Minute, 512},
+	{time.Hour, 4096},
 }
 
 type ipRecord struct {
@@ -61,7 +61,7 @@ func newIPRecord() *ipRecord {
 
 // PListener implements the net.Listener interface with protection against spams.
 type PListener struct {
-	*net.TCPListener
+	net.Listener
 
 	// MaxConn is maximum number of connections listener willing to keep active.
 	// Default value is DefaultMaxConn.
@@ -90,9 +90,9 @@ type PListener struct {
 }
 
 // New returns a new PListener that wraps the given TCPListener with anti-spam capabilities.
-func New(tcpListener *net.TCPListener) (pListener *PListener) {
+func New(listener net.Listener) (pListener *PListener) {
 	pListener = &PListener{
-		TCPListener:     tcpListener,
+		Listener:        listener,
 		MaxConn:         DefaultMaxConn,
 		MaxConnSingleIP: DefaultMaxConnSingleIP,
 		OnSpam:          nil,
@@ -111,13 +111,13 @@ func New(tcpListener *net.TCPListener) (pListener *PListener) {
 func (pListener *PListener) Accept() (conn net.Conn, err error) {
 	blocked := false
 	banned := false
-	var tcpConn *net.TCPConn
+	var c net.Conn
 	var raddr *net.TCPAddr
 	var record *ipRecord
 	defer func() {
 		if err != nil {
-			if tcpConn != nil {
-				_ = tcpConn.Close()
+			if c != nil {
+				_ = c.Close()
 			}
 			pListener.connCond.L.Lock()
 			pListener.currentConn--
@@ -128,7 +128,7 @@ func (pListener *PListener) Accept() (conn net.Conn, err error) {
 	}()
 	for {
 		if blocked {
-			err = tcpConn.Close()
+			err = c.Close()
 			if err != nil {
 				return
 			}
@@ -148,12 +148,12 @@ func (pListener *PListener) Accept() (conn net.Conn, err error) {
 		}
 		pListener.currentConn++
 		pListener.connCond.L.Unlock()
-		tcpConn, err = pListener.TCPListener.AcceptTCP()
+		c, err = pListener.Listener.Accept()
 		if err != nil {
 			return
 		}
 		now := time.Now()
-		raddr = tcpConn.RemoteAddr().(*net.TCPAddr)
+		raddr = c.RemoteAddr().(*net.TCPAddr)
 		var ip [16]byte
 		copy(ip[:], raddr.IP.To16())
 		record = pListener.getRecord(ip)
@@ -204,15 +204,14 @@ func (pListener *PListener) Accept() (conn net.Conn, err error) {
 			}
 			record.history = append(record.history, now)
 		}
-		pconn := &pConn{TCPConn: tcpConn, listener: pListener}
+		pconn := &pConn{Conn: c, listener: pListener}
 		record.activeConns = append(record.activeConns, pconn)
 		conn = pconn
 		return
 	}
 }
 
-// Close closes the underlying TCP listener and erases the pointers from created connections.
-// To remove internal records from the memory, remove all the pointers pointing to PListener.
+// Close closes the underlying listener
 func (pListener *PListener) Close() error {
 	pListener.ipRecordMut.Lock()
 	defer pListener.ipRecordMut.Unlock()
@@ -225,7 +224,7 @@ func (pListener *PListener) Close() error {
 		}
 		record.mut.Unlock()
 	}
-	return pListener.TCPListener.Close()
+	return pListener.Listener.Close()
 }
 
 // SetLimiter overrides the default limiter for listener.
@@ -254,7 +253,7 @@ func (pListener *PListener) Ban(ip net.IP) {
 	record.privileged = false
 	if record.activeConns != nil {
 		for _, c := range record.activeConns {
-			_ = c.TCPConn.Close()
+			_ = c.Conn.Close()
 		}
 	}
 	record.activeConns = nil
@@ -274,7 +273,7 @@ func (pListener *PListener) TempBan(ip net.IP, until time.Time) {
 	record.privileged = false
 	if record.activeConns != nil {
 		for _, c := range record.activeConns {
-			_ = c.TCPConn.Close()
+			_ = c.Conn.Close()
 		}
 	}
 	record.activeConns = []*pConn{}

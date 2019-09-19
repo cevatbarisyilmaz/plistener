@@ -186,7 +186,7 @@ func TestPListener_SetLimiter(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		start := time.Now()
 		count := 0
-		err = listener.SetDeadline(start.Add(time.Second * 20))
+		err = listener.Listener.(*net.TCPListener).SetDeadline(start.Add(time.Second * 20))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -247,7 +247,7 @@ func TestPListener_Ban(t *testing.T) {
 				return
 			}
 		}()
-		err = listener.SetDeadline(time.Now().Add(time.Second * 7))
+		err = listener.Listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second * 7))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -316,7 +316,7 @@ func TestPListener_TempBan(t *testing.T) {
 			}
 		}
 	}()
-	err = listener.SetDeadline(time.Now().Add(time.Minute))
+	err = listener.Listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Minute))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -374,7 +374,7 @@ func TestPListener_GivePrivilege(t *testing.T) {
 	}()
 	count := 0
 	for {
-		err = listener.SetDeadline(time.Now().Add(time.Second * 7))
+		err = listener.Listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second * 7))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -456,7 +456,7 @@ func TestPListener_OnSpam(t *testing.T) {
 		banned = true
 	}
 	for {
-		err = listener.SetDeadline(time.Now().Add(time.Second * 5))
+		err = listener.Listener.(*net.TCPListener).SetDeadline(time.Now().Add(time.Second * 5))
 		if err != nil {
 			log.Fatal(err)
 		}
