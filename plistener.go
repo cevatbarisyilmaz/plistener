@@ -346,10 +346,12 @@ func (pListener *PListener) cleanup() {
 			break
 		}
 		now := time.Now()
+		newMap := make(map[[16]byte]*ipRecord)
 		for ip, record := range pListener.ipRecords {
 			record.mut.Lock()
 			if record.blocked || record.privileged {
 				record.mut.Unlock()
+				newMap[ip] = record
 				continue
 			}
 			if record.blockedUntil != nil {
@@ -357,20 +359,22 @@ func (pListener *PListener) cleanup() {
 					record.blockedUntil = nil
 				} else {
 					record.mut.Unlock()
+					newMap[ip] = record
 					continue
 				}
 			}
 			if !record.recentlyActive {
 				if len(record.activeConns) == 0 {
-					delete(pListener.ipRecords, ip)
 					record.mut.Unlock()
 					continue
 				}
 				record.history = []time.Time{}
 			}
 			record.recentlyActive = false
+			newMap[ip] = record
 			record.mut.Unlock()
 		}
+		pListener.ipRecords = newMap
 		pListener.ipRecordMut.Unlock()
 	}
 }
