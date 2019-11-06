@@ -8,6 +8,7 @@ package plistener
 
 import (
 	"net"
+	"sort"
 	"sync"
 	"time"
 )
@@ -24,17 +25,19 @@ var DefaultMaxConnSingleIP = 24
 
 // Limiter is a slice of pairs of durations and amounts of maximum permitted new connections for IP addresses during the stated duration.
 type Limiter []struct {
-	Duration time.Duration
-	Int      int
+	Duration  time.Duration
+	Threshold int
 }
 
 // DefaultLimiter is the default Limiter of listeners.
 // Changing DefaultLimiter only affects future listeners.
 // To change a currently active listener use SetLimiter function of PListener struct.
 var DefaultLimiter = Limiter{
-	{time.Second, 64},
-	{time.Minute, 512},
-	{time.Hour, 4096},
+	{time.Second, 128},
+	{time.Minute, 1024},
+	{time.Hour, 8192},
+	{time.Hour * 24, 8192 * 2},
+	{time.Hour * 24 * 7, 8192 * 2 * 2},
 }
 
 type ipRecord struct {
@@ -176,33 +179,30 @@ func (pListener *PListener) Accept() (conn net.Conn, err error) {
 				blocked = true
 				continue
 			}
-			count := 0
 			cut := -1
-			for index, historyRecord := range record.history {
-				interval := now.Sub(historyRecord)
-				if interval > pListener.maxLimitDur {
-					cut = index
-					continue
-				}
-				count++
-				for _, limit := range pListener.limiter {
-					if limit.Duration > interval {
-						if count >= limit.Int {
-							blocked = true
-							break
-						}
+			high := len(record.history) - 1
+			for _, limit := range pListener.limiter {
+				low := 0
+				for low < high {
+					middle := low + (high-low)/2
+					interval := now.Sub(record.history[middle])
+					if interval > limit.Duration {
+						low = middle + 1
+					} else {
+						high = middle - 1
 					}
 				}
-				if blocked {
+				cut = low - 1
+				if len(record.history)-low >= limit.Threshold {
+					blocked = true
 					break
 				}
 			}
 			record.recentlyActive = true
-			record.history = record.history[cut+1:]
 			if blocked {
 				continue
 			}
-			record.history = append(record.history, now)
+			record.history = append(record.history[cut+1:], now)
 		}
 		pconn := &pConn{Conn: c, listener: pListener}
 		record.activeConns = append(record.activeConns, pconn)
@@ -228,17 +228,13 @@ func (pListener *PListener) Close() error {
 }
 
 // SetLimiter overrides the default limiter for listener.
-// Limits can be sorted in any order.
 // A duration and int duple specifies maximum allowed new connections from an IP in a time interval.
 func (pListener *PListener) SetLimiter(limiter Limiter) {
+	sort.Slice(limiter, func(i, j int) bool {
+		return limiter[i].Duration < limiter[j].Duration
+	})
+	pListener.maxLimitDur = limiter[len(limiter)-1].Duration
 	pListener.limiter = limiter
-	max := time.Nanosecond
-	for _, limit := range limiter {
-		if limit.Duration > max {
-			max = limit.Duration
-		}
-	}
-	pListener.maxLimitDur = max
 }
 
 // Ban permanently blocks any future connections and closes all the current connections with the given IP created by this listener.
@@ -339,10 +335,10 @@ func (pListener *PListener) getRecord(ip [16]byte) (record *ipRecord) {
 
 func (pListener *PListener) cleanup() {
 	for {
-		if pListener.maxLimitDur*2 > time.Minute {
+		if pListener.maxLimitDur*2 > time.Hour*25 {
 			time.Sleep(pListener.maxLimitDur * 2)
 		} else {
-			time.Sleep(time.Minute)
+			time.Sleep(time.Hour * 25)
 		}
 		pListener.ipRecordMut.Lock()
 		if pListener.ipRecords == nil {
