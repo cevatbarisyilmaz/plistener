@@ -1,5 +1,5 @@
 /*
-Package plistener is a wrapper around TCP Listeners to filter spam requests.
+Package plistener is a wrapper around net.Listener to filter spam requests.
 
 It has capability to detect and filter out spam requests as well as temporary and permanent bans on  IPs.
 
@@ -92,7 +92,7 @@ type PListener struct {
 	ipRecordMut *sync.Mutex
 }
 
-// New returns a new PListener that wraps the given TCPListener with anti-spam capabilities.
+// New returns a new PListener that wraps the given net.Listener with anti-spam capabilities.
 func New(listener net.Listener) (pListener *PListener) {
 	pListener = &PListener{
 		Listener:        listener,
@@ -115,7 +115,7 @@ func (pListener *PListener) Accept() (conn net.Conn, err error) {
 	blocked := false
 	banned := false
 	var c net.Conn
-	var raddr *net.TCPAddr
+	var raddr net.IP
 	var record *ipRecord
 	defer func() {
 		if err != nil {
@@ -137,7 +137,7 @@ func (pListener *PListener) Accept() (conn net.Conn, err error) {
 			}
 			record.mut.Unlock()
 			if !banned && pListener.OnSpam != nil {
-				pListener.OnSpam(raddr.IP)
+				pListener.OnSpam(raddr)
 			}
 			banned = false
 			blocked = false
@@ -156,10 +156,8 @@ func (pListener *PListener) Accept() (conn net.Conn, err error) {
 			return
 		}
 		now := time.Now()
-		raddr = c.RemoteAddr().(*net.TCPAddr)
-		var ip [16]byte
-		copy(ip[:], raddr.IP.To16())
-		record = pListener.getRecord(ip)
+		raddr = getIP(c.RemoteAddr())
+		record = pListener.getRecord(ipToKey(raddr))
 		record.mut.Lock()
 		if !record.privileged {
 			if record.blocked {
@@ -239,9 +237,7 @@ func (pListener *PListener) SetLimiter(limiter Limiter) {
 
 // Ban permanently blocks any future connections and closes all the current connections with the given IP created by this listener.
 func (pListener *PListener) Ban(ip net.IP) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip.To16())
-	record := pListener.getRecord(ipByte)
+	record := pListener.getRecord(ipToKey(ip))
 	record.mut.Lock()
 	defer record.mut.Unlock()
 	record.blocked = true
@@ -259,9 +255,7 @@ func (pListener *PListener) Ban(ip net.IP) {
 // TempBan temporarily blocks future connections with the given IP until the given time.
 // It also closes all the current connections with the given IP created by this listener.
 func (pListener *PListener) TempBan(ip net.IP, until time.Time) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip.To16())
-	record := pListener.getRecord(ipByte)
+	record := pListener.getRecord(ipToKey(ip))
 	record.mut.Lock()
 	defer record.mut.Unlock()
 	record.blocked = false
@@ -278,9 +272,7 @@ func (pListener *PListener) TempBan(ip net.IP, until time.Time) {
 
 // RevokeBan revokes the ban on the given IP.
 func (pListener *PListener) RevokeBan(ip net.IP) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip.To16())
-	record := pListener.getRecord(ipByte)
+	record := pListener.getRecord(ipToKey(ip))
 	record.mut.Lock()
 	defer record.mut.Unlock()
 	record.blocked = false
@@ -292,9 +284,7 @@ func (pListener *PListener) RevokeBan(ip net.IP) {
 // GivePrivilege removes the limitations of the limiter and MaxConnSingleIP for the given IP.
 // However if MaxConn quota is reached, requests from privileged IPs are still get blocked.
 func (pListener *PListener) GivePrivilege(ip net.IP) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip.To16())
-	record := pListener.getRecord(ipByte)
+	record := pListener.getRecord(ipToKey(ip))
 	record.mut.Lock()
 	defer record.mut.Unlock()
 	record.blocked = false
@@ -308,9 +298,7 @@ func (pListener *PListener) GivePrivilege(ip net.IP) {
 
 // RevokePrivilege removes the privilege of the given IP.
 func (pListener *PListener) RevokePrivilege(ip net.IP) {
-	var ipByte [16]byte
-	copy(ipByte[:], ip.To16())
-	record := pListener.getRecord(ipByte)
+	record := pListener.getRecord(ipToKey(ip))
 	record.mut.Lock()
 	defer record.mut.Unlock()
 	record.privileged = false
@@ -377,4 +365,21 @@ func (pListener *PListener) cleanup() {
 		pListener.ipRecords = newMap
 		pListener.ipRecordMut.Unlock()
 	}
+}
+
+func getIP(addr net.Addr) net.IP {
+	switch addr := addr.(type) {
+	case *net.TCPAddr:
+		return addr.IP
+	case *net.UDPAddr:
+		return addr.IP
+	case *net.IPAddr:
+		return addr.IP
+	}
+	return nil
+}
+
+func ipToKey(ip net.IP) (key [16]byte) {
+	copy(key[:], ip.To16())
+	return
 }

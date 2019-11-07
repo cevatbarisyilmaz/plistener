@@ -5,7 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/cevatbarisyilmaz/plistener)](https://goreportcard.com/report/github.com/cevatbarisyilmaz/plistener)
 [![GitHub release](https://img.shields.io/github/release/cevatbarisyilmaz/plistener.svg)](https://github.com/cevatbarisyilmaz/plistener/releases/)
 
-plistener is a spam-resistant TCP listener package for Go.
+plistener is a spam-resistant listener package for Go.
 
 ## Features
 
